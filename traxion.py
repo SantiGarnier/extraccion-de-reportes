@@ -4,6 +4,7 @@ Lo de login, espera y logout viene del bot `automatizacion-traxion`, probado con
 """
 import re
 from datetime import datetime
+from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, TimeoutError as PWTimeout
 
@@ -240,3 +241,161 @@ def abrir_menu_usuario(page: Page, salir_menu, timeout: int) -> None:
         salir_menu.filter(visible=True).first.wait_for(state="visible", timeout=min(timeout, 3000))
     except PWTimeout:
         pass
+
+
+# --- Pantallas (HTML real inspeccionado en testing el 2026-10-15) ---
+
+def ir_a(page: Page, seccion: str, item: str, titulo: str) -> None:
+    """
+    Menu lateral -> seccion (GESTORES, FINANCIERO, REPORTES) -> item. El item se busca DENTRO de la
+    seccion: hay items con el mismo nombre en secciones distintas. La seccion solo despliega el submenu
+    en el navegador; si ya esta abierto no se clickea, porque clickearla lo cerraria.
+    """
+    if es_pantalla_login(page):
+        raise SesionVencida("La sesion vencio (la pagina muestra el login)")
+    li = page.locator(
+        "xpath=//ul[contains(@class,'page-sidebar-menu')]/li[contains(@class,'nav-item')]"
+        f"[a/span[contains(@class,'title') and normalize-space()='{seccion}']]").first
+    link = li.locator(f"xpath=./ul[contains(@class,'sub-menu')]/li/a[normalize-space()='{item}']").first
+    if not link.count():
+        raise BotError(f"El menu no tiene {seccion} > {item}")
+    if not link.is_visible():
+        li.locator("xpath=./a").click()
+        link.wait_for(state="visible")
+    click_y_esperar(page, link, f"Abrir {seccion} > {item}")
+    verificar_titulo(page, titulo)
+
+
+def verificar_titulo(page: Page, titulo: str) -> None:
+    h1 = page.locator("h1.page-title").first
+    actual = " ".join(h1.inner_text().split()) if h1.count() else "(sin titulo)"
+    if actual != titulo:
+        raise BotError(f"Se esperaba la pantalla '{titulo}' y aparecio '{actual}'")
+
+
+def abrir_pestania(page: Page, nombre: str, campo_esperado: str) -> None:
+    """
+    Pestania jQuery UI. Su contenido carga aparte: puede verse seleccionada pero vacia un rato, asi que
+    se espera a que aparezca un campo propio de esa pestania (`campo_esperado`, el texto de su label).
+    """
+    pestania = page.locator(".ui-tabs-nav li", has_text=re.compile(rf"^\s*{re.escape(nombre)}\s*$")).first
+    if not pestania.count():
+        raise BotError(f"No aparecio la pestania '{nombre}'")
+    if "ui-tabs-active" not in (pestania.get_attribute("class") or ""):
+        pestania.locator("a").click()
+    try:
+        grupo(page, campo_esperado).wait_for(state="visible")
+    except PWTimeout:
+        raise SinRespuesta(f"La pestania '{nombre}' no termino de cargar ('{campo_esperado}' no aparecio)") from None
+
+
+def grupo(page: Page, label: str):
+    """El .form-group VISIBLE cuyo label es `label` (con o sin ':' al final). Hay copias ocultas en otras pestanias."""
+    etiqueta = page.locator("label.control-label", has_text=re.compile(rf"^\s*{re.escape(label)}\s*:?\s*$"))
+    return page.locator(".form-group", has=etiqueta).filter(visible=True).first
+
+
+def marcar_botones(page: Page, label: str, textos: list[str]) -> None:
+    """
+    Botones de Bootstrap (data-toggle="buttons"): se clickea el <label>; marcado = clase 'active' y el
+    checkbox 'checked'. Un click sobre uno marcado lo DESMARCA: se mira el estado antes de clickear.
+    """
+    g = grupo(page, label)
+    if not g.count():
+        raise BotError(f"No aparecio el bloque '{label}'")
+    for texto in textos:
+        boton = g.locator("label.btn", has_text=re.compile(rf"^\s*{re.escape(texto)}\s*$"))
+        if boton.count() != 1:
+            raise BotError(f"'{label}': se esperaba un boton '{texto}' y hay {boton.count()}")
+        if not _marcado(boton):
+            boton.click()
+            page.wait_for_function("el => el.classList.contains('active') && el.querySelector('input').checked",
+                                   arg=boton.element_handle(), timeout=5000)
+        if not _marcado(boton):
+            raise BotError(f"'{label}': no se pudo marcar '{texto}'")
+
+
+def _marcado(boton) -> bool:
+    return boton.evaluate("el => el.classList.contains('active') && el.querySelector('input').checked")
+
+
+def poner_valor(page: Page, label: str, valor: str, aceptables: tuple[str, ...] = ()) -> None:
+    """
+    Carga un campo de texto (fecha dd/mm/aaaa u hora). Si ya tiene el valor (o uno equivalente, como
+    '0:00:00' por '00:00:00') no se toca. Despues verifica que el campo haya quedado con ese valor.
+    """
+    campo = grupo(page, label).locator("input:not([type=hidden])").first
+    if campo.input_value() in (valor, *aceptables):
+        return
+    campo.fill(valor)
+    campo.press("Escape")  # cierra el calendario/reloj desplegable para que no tape "Buscar"
+    page.evaluate("el => { if (window.jQuery && jQuery(el).datepicker) jQuery(el).datepicker('hide'); }",
+                  campo.element_handle())
+    if campo.input_value() not in (valor, *aceptables):
+        raise BotError(f"'{label}' quedo en '{campo.input_value()}' en vez de '{valor}'")
+
+
+def buscar(page: Page, accion: str, timeout: int | None = None) -> int:
+    """Clickea "Buscar" y devuelve la cantidad de la grilla ("Datos: N")."""
+    boton = page.get_by_role("button", name="Buscar", exact=True).filter(visible=True).first
+    click_y_esperar(page, boton, f"{accion}: Buscar", timeout=timeout)
+    return cantidad_de_datos(page, accion)
+
+
+def cantidad_de_datos(page: Page, accion: str) -> int:
+    for texto in page.locator(".caption").all_inner_texts():
+        m = re.search(r"Datos:\s*([\d.]+)", texto)
+        if m:
+            return int(m.group(1).replace(".", ""))
+    # "No pude leer" no es "no hay datos": es un error del bot
+    raise BotError(f"{accion}: no se pudo leer la cantidad de datos de la grilla")
+
+
+def exportar_excel(page: Page, destino: Path, accion: str, columnas: list[str],
+                   timeout: int | None = None) -> Path:
+    """
+    Funciones -> "Exportar a Excel". Es un link comun (no pasa por el ajaxifier): el servidor contesta
+    con un adjunto (en testing, un CSV). En el mismo menu hay acciones peligrosas (Suspender, Anular,
+    Confirmar marcados...): se clickea SOLO el item con texto exacto "Exportar a Excel".
+    `destino` va sin extension: se usa la del archivo que manda Traxion.
+    """
+    funciones = page.locator("a.dropdown-toogle", has_text=re.compile(r"^\s*Funciones\s*$")).filter(visible=True)
+    if funciones.count() != 1:
+        raise BotError(f"{accion}: se esperaba un boton 'Funciones' y hay {funciones.count()}")
+    item = funciones.locator("xpath=..").locator(".dropdown-menu a").filter(
+        has_text=re.compile(r"^\s*Exportar a Excel\s*$"))
+    if item.count() != 1:
+        raise BotError(f"{accion}: se esperaba un item 'Exportar a Excel' y hay {item.count()}")
+    if not item.is_visible():
+        funciones.click()
+        item.wait_for(state="visible")
+
+    inicio = datetime.now()
+    try:
+        with page.expect_download(timeout=timeout) as info:
+            item.click()
+    except PWTimeout:
+        ms = timeout if timeout is not None else config.TIMEOUT_MS
+        raise SinRespuesta(f"{accion}: la exportacion no bajo ningun archivo en {ms / 1000:g} s") from None
+    descarga = info.value
+    if descarga.failure():
+        raise BotError(f"{accion}: fallo la descarga ({descarga.failure()})")
+    archivo = destino.with_name(destino.name + (Path(descarga.suggested_filename).suffix or ".csv"))
+    descarga.save_as(archivo)
+    log(f"  {accion}: bajo '{descarga.suggested_filename}' -> {archivo.name} "
+        f"({archivo.stat().st_size} bytes, {(datetime.now() - inicio).total_seconds():.0f} s)")
+    verificar_archivo(archivo, accion, columnas)
+    return archivo
+
+
+def verificar_archivo(archivo: Path, accion: str, columnas: list[str]) -> None:
+    """Que no este vacio, que no sea una pagina HTML (error o login) y que tenga el encabezado esperado."""
+    datos = archivo.read_bytes()
+    if not datos.strip():
+        raise BotError(f"{accion}: el archivo exportado esta vacio")
+    if datos.lstrip()[:1] == b"<":
+        raise BotError(f"{accion}: en vez del reporte llego una pagina HTML")
+    encabezado = [c.strip().strip('"') for c in datos.decode("iso-8859-1").splitlines()[0].split(";")]
+    faltan = [c for c in columnas if c not in encabezado]
+    if faltan:
+        raise BotError(f"{accion}: al archivo le faltan las columnas {faltan}")

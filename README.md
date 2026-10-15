@@ -3,9 +3,23 @@
 Bot que entra a Traxion con el usuario operador, exporta a Excel los reportes de **Depósitos**,
 **Cuentas** y **Ventas**, y los manda por mail. Siempre cierra la sesión en Traxion, aunque algo falle.
 
-> Estado: login, logout, mail y orden de la corrida listos. Los tres reportes todavía no están
-> programados (falta inspeccionar el HTML real de cada pantalla): por ahora el mail los informa
-> como "no programado".
+> Estado: los tres reportes están programados contra el HTML real de testing y probados contra un
+> Traxion de mentira. Falta la primera corrida completa contra testing.
+
+## Los reportes
+
+| Reporte | Pantalla | Qué hace el bot | Archivo |
+|---|---|---|---|
+| Depósitos | FINANCIERO → Depositos | Pestaña "Por Filtros" con la fecha del reporte (00:00:00 a 23:59:59), marca todo "Incluir" y "Depositos: Enviados / Recibidos", Buscar, Exportar a Excel | `Depositos_AAAA-MM-DD.csv` |
+| Cuentas | GESTORES → Cuentas | Pestaña "General", en "Mostrar" marca Cta.Cte., Saldo Disponible y Saldo Virtual, Buscar, Exportar a Excel | `Cuentas_AAAA-MM-DD.csv` |
+| Ventas | REPORTES → Ventas | Pestaña "Por Filtros" con la fecha del reporte (resto de filtros por defecto: Estado "Confirmada"), Buscar, Exportar a Excel | `Ventas_AAAA-MM-DD.csv` |
+
+- "Exportar a Excel" baja en realidad un **CSV** (separado por `;`, coma decimal, ISO-8859-1). Se manda tal cual,
+  después de verificar que no esté vacío, que no sea una página HTML y que tenga las columnas esperadas.
+- Un día sin movimientos **no es un error**: el archivo sale con el encabezado y el mail dice "sin movimientos".
+- Los saldos de Cuentas son los del **momento de la consulta** (no hay "saldo de ayer").
+- En "Funciones" hay acciones peligrosas (Suspender, Activar, Confirmar y Anular marcados, etc.): el bot solo
+  clickea el texto exacto "Exportar a Excel".
 
 ## Instalación
 
@@ -42,7 +56,7 @@ Sale con código **0** si todo salió bien y **1** si falló algún reporte, el 
 La fecha se fija **una sola vez, al arrancar**:
 
 - Si el bot arranca a las 23:59 del 15/10 y termina pasada la medianoche, sigue sacando los reportes del **15/10**.
-  Los reportes que filtran por "Hoy" o "Del día" se dan cuenta de que cambió el día y piden el 15/10 explícitamente.
+  Depósitos y Ventas no usan las pestañas "Hoy": piden siempre la fecha del reporte en "Por Filtros".
 - Si arranca de madrugada (antes de `HORA_CORTE_FECHA`, por defecto las 6:00), por ejemplo porque el cron se
   demoró, saca los del **día anterior**.
 - Con `--fecha AAAA-MM-DD` se fuerza una fecha.

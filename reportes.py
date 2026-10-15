@@ -1,6 +1,6 @@
 """
 Los reportes y la corrida: fecha del reporte, carpeta del dia, un reporte por vez con su resultado.
-Cada reporte es una funcion (page, fecha, carpeta) -> Path del archivo descargado.
+Cada reporte es una funcion (page, fecha, carpeta) -> (archivo descargado, cantidad de registros).
 """
 import shutil
 import traceback
@@ -11,7 +11,8 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 import config
-from traxion import BotError, Sesion, guardar_debug, log
+from traxion import (BotError, Sesion, abrir_pestania, buscar, exportar_excel, guardar_debug, ir_a, log,
+                     marcar_botones, poner_valor)
 
 
 @dataclass
@@ -19,10 +20,7 @@ class Resultado:
     nombre: str
     archivo: Path | None = None
     error: str | None = None
-
-
-class NoProgramado(BotError):
-    """El reporte todavia no esta programado (falta inspeccionar su pantalla)."""
+    registros: int | None = None
 
 
 def fecha_del_reporte(ahora: datetime | None = None) -> date:
@@ -35,11 +33,6 @@ def fecha_del_reporte(ahora: datetime | None = None) -> date:
     if ahora.hour < config.HORA_CORTE_FECHA:
         return ahora.date() - timedelta(days=1)
     return ahora.date()
-
-
-def es_hoy(fecha: date) -> bool:
-    """Si es False, la corrida paso la medianoche: no sirven los filtros "Hoy"/"Del dia", hay que pedir la fecha."""
-    return fecha == date.today()
 
 
 def carpeta_del_dia(fecha: date) -> Path:
@@ -62,18 +55,53 @@ def limpiar_reportes(hoy: date | None = None) -> None:
             pass  # carpeta con otro nombre o bloqueada: no se toca
 
 
-# --- Reportes (se programan despues de inspeccionar el HTML real de cada pantalla) ---
+# --- Reportes ---
+# Depositos y Ventas usan la pestania "Por Filtros" con la fecha del reporte de 00:00:00 a 23:59:59
+# (y no "Hoy"): asi da igual si la corrida de las 23:59 pasa la medianoche o si se repite un dia.
 
-def depositos(page: Page, fecha: date, carpeta: Path) -> Path:
-    raise NoProgramado("todavia no esta programado (falta inspeccionar FINANCIERO > Depositos)")
+def _filtrar_por_fecha(page: Page, fecha: date) -> None:
+    dia = f"{fecha:%d/%m/%Y}"
+    poner_valor(page, "Desde fecha", dia)
+    poner_valor(page, "Desde hora", "00:00:00", aceptables=("0:00:00",))
+    poner_valor(page, "Hasta fecha", dia)
+    poner_valor(page, "Hasta hora", "23:59:59")
 
 
-def cuentas(page: Page, fecha: date, carpeta: Path) -> Path:
-    raise NoProgramado("todavia no esta programado (falta inspeccionar GESTORES > Cuentas)")
+def depositos(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
+    ir_a(page, "FINANCIERO", "Depositos", "Administracion de Depositos")
+    abrir_pestania(page, "Por Filtros", "Desde fecha")
+    _filtrar_por_fecha(page, fecha)
+    marcar_botones(page, "Incluir", ["PEI", "T.Credito", "Rec.Terceros", "Efectivo", "Depositos", "Cheques"])
+    marcar_botones(page, "Depositos", ["Enviados", "Recibidos"])
+    registros = buscar(page, "Depositos")
+    archivo = exportar_excel(page, carpeta / f"Depositos_{fecha.isoformat()}", "Depositos",
+                             columnas=["Fecha", "Nro.Ope.", "Cuenta", "Importe", "Estado"],
+                             timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
+    return archivo, registros
 
 
-def ventas(page: Page, fecha: date, carpeta: Path) -> Path:
-    raise NoProgramado("todavia no esta programado (falta inspeccionar REPORTES > Ventas)")
+def cuentas(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
+    # Los saldos son los del momento de la consulta: no hay "saldo de ayer"
+    ir_a(page, "GESTORES", "Cuentas", "Cuentas")
+    abrir_pestania(page, "General", "Mostrar")
+    marcar_botones(page, "Mostrar", ["Cta.Cte.", "Saldo Disponible", "Saldo Virtual"])
+    # con los saldos marcados la busqueda es lenta (~40 s en produccion)
+    registros = buscar(page, "Cuentas", timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
+    archivo = exportar_excel(page, carpeta / f"Cuentas_{fecha.isoformat()}", "Cuentas",
+                             columnas=["Numero", "Nombre", "Cta.Cte.", "Saldo Disponible", "Saldo Virtual"],
+                             timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
+    return archivo, registros
+
+
+def ventas(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
+    ir_a(page, "REPORTES", "Ventas", "Consulta de Ventas")
+    abrir_pestania(page, "Por Filtros", "Desde fecha")
+    _filtrar_por_fecha(page, fecha)
+    registros = buscar(page, "Ventas", timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
+    archivo = exportar_excel(page, carpeta / f"Ventas_{fecha.isoformat()}", "Ventas",
+                             columnas=["Nro.Ope.", "Fecha", "Producto", "Estado", "Importe"],
+                             timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
+    return archivo, registros
 
 
 REPORTES = [("Depósitos", depositos), ("Cuentas", cuentas), ("Ventas", ventas)]
@@ -96,16 +124,14 @@ def ejecutar(sesion: Sesion, fecha: date, carpeta: Path, reportes=None) -> list[
         nombre, funcion = pendientes.pop(0)
         log(f"--- {nombre} ---")
         try:
-            archivo = funcion(sesion.page, fecha, carpeta)
-            resultados.append(Resultado(nombre, archivo=archivo))
-            log(f"{nombre}: OK ({archivo.name})")
+            archivo, registros = funcion(sesion.page, fecha, carpeta)
+            resultados.append(Resultado(nombre, archivo=archivo, registros=registros))
+            log(f"{nombre}: OK ({archivo.name}, {registros} registros)")
             continue
         except Exception as e:  # noqa: BLE001 - un reporte que falla no puede frenar a los demas
             motivo = motivo_de(e)
             resultados.append(Resultado(nombre, error=motivo))
             log(f"{nombre}: ERROR {motivo}")
-            if isinstance(e, NoProgramado):
-                continue
             if not isinstance(e, BotError):
                 log(traceback.format_exc())
             if sesion.page is not None:

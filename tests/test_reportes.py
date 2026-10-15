@@ -77,6 +77,15 @@ class TestCorreo(unittest.TestCase):
         self.assertIn("Depositos: dep.xls (2 KB)", cuerpo)
         self.assertNotIn("No se pudieron", cuerpo)
 
+    def test_cantidad_de_registros(self):
+        res = [Resultado("Depósitos", archivo=self.archivo("dep.csv"), registros=0),
+               Resultado("Cuentas", archivo=self.archivo("cue.csv"), registros=1258),
+               Resultado("Ventas", archivo=self.archivo("ven.csv"), registros=1)]
+        cuerpo = correo.armar(date(2026, 10, 15), res, self.inicio, self.fin).get_body().get_content()
+        self.assertIn("Depósitos: dep.csv (2 KB, sin movimientos)", cuerpo)
+        self.assertIn("Cuentas: cue.csv (2 KB, 1.258 registros)", cuerpo)
+        self.assertIn("Ventas: ven.csv (2 KB, 1 registro)", cuerpo)
+
     def test_archivo_chico_en_bytes(self):
         a = Path(self.tmp.name) / "chico.csv"
         a.write_bytes(b"x" * 25)

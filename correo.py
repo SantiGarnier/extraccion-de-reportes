@@ -18,6 +18,15 @@ def _tamanio(bytes_: int) -> str:
     return f"{bytes_ / 1024 / 1024:,.1f} MB"
 
 
+def _registros(n: int | None) -> str:
+    if n is None:
+        return ""
+    if n == 0:
+        return ", sin movimientos"
+    miles = f"{n:,}".replace(",", ".")
+    return f", {miles} registro{'s' if n != 1 else ''}"
+
+
 def armar(fecha: date, resultados: list[Resultado], inicio: datetime, fin: datetime) -> EmailMessage:
     ok = [r for r in resultados if r.archivo is not None]
     fallidos = [r for r in resultados if r.archivo is None]
@@ -29,7 +38,8 @@ def armar(fecha: date, resultados: list[Resultado], inicio: datetime, fin: datet
     lineas = [f"Reportes de Traxion del {fecha:%d/%m/%Y} (corrida del {inicio:%d/%m %H:%M} al {fin:%d/%m %H:%M}).", ""]
     if ok:
         lineas.append("Generados (van adjuntos):")
-        lineas += [f"  - {r.nombre}: {r.archivo.name} ({_tamanio(r.archivo.stat().st_size)})" for r in ok]
+        lineas += [f"  - {r.nombre}: {r.archivo.name} ({_tamanio(r.archivo.stat().st_size)}{_registros(r.registros)})"
+                   for r in ok]
         lineas.append("")
     if fallidos:
         lineas.append("No se pudieron generar:")

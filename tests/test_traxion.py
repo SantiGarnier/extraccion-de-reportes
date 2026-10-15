@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 import config
 import reportes
 import traxion
+from tests import fake_traxion
 from tests.fake_traxion import CLAVE, URL, USUARIO, FakeTraxion
 
 
@@ -104,7 +105,7 @@ class TestContraTraxionFalso(unittest.TestCase):
             self.assertTrue(page.get_by_text("GESTORES", exact=True).count())  # pagina logueada
             archivo = carpeta / f"{nombre}.xls"
             archivo.write_text("datos", encoding="utf-8")
-            return archivo
+            return archivo, 1
         return reporte
 
     def test_ejecutar_sigue_despues_de_un_error_y_vuelve_a_entrar(self):
@@ -142,6 +143,60 @@ class TestContraTraxionFalso(unittest.TestCase):
             self.assertIsNone(r.archivo)
             self.assertIn("no se pudo volver a iniciar sesion (Login fallido", r.error)
         self.assertEqual([r.nombre for r in res], ["A", "B", "C"])
+
+    # --- Los tres reportes contra las pantallas de mentira ---
+
+    def assert_nada_peligroso(self):
+        peligrosos = [p for p in self.traxion.pedidos if p.startswith("/peligro")]
+        self.assertEqual(peligrosos, [], "se clickeo una accion peligrosa de 'Funciones'")
+
+    def test_cuentas(self):
+        self.sesion.iniciar()
+        archivo, registros = reportes.cuentas(self.sesion.page, date(2026, 10, 14), Path(self.tmp.name))
+        self.assertEqual((archivo.name, registros), ("Cuentas_2026-10-14.csv", 258))
+        self.assertIn("/cuentas", self.traxion.pedidos)  # el de GESTORES, no el de PROVEEDORES
+        self.assertNotIn("/proveedores/cuentas", self.traxion.pedidos)
+        form = self.traxion.busquedas["cuentas"]
+        # Cta.Cte. ya venia marcado: no se tiene que haber desmarcado
+        for texto in ("Cta.Cte.", "Saldo Disponible", "Saldo Virtual"):
+            self.assertEqual(form.get(f"mostrar_{texto}"), "on", texto)
+        self.assertNotIn("mostrar_Arbol", form)
+        self.assertEqual(self.traxion.exportes, ["cuentas"])
+        self.assert_nada_peligroso()
+
+    def test_depositos_por_filtros_con_la_fecha_del_reporte(self):
+        self.sesion.iniciar()
+        archivo, registros = reportes.depositos(self.sesion.page, date(2026, 10, 14), Path(self.tmp.name))
+        self.assertEqual((archivo.name, registros), ("Depositos_2026-10-14.csv", 0))  # sin movimientos no es error
+        form = self.traxion.busquedas["depositos"]
+        self.assertEqual((form["desde_fecha"], form["hasta_fecha"]), ("14/10/2026", "14/10/2026"))
+        self.assertEqual((form["desde_hora"], form["hasta_hora"]), ("0:00:00", "23:59:59"))
+        for texto in ("PEI", "T.Credito", "Rec.Terceros", "Efectivo", "Depositos", "Cheques"):
+            self.assertEqual(form.get(f"incluir_{texto}"), "on", texto)
+        self.assertEqual((form.get("dep_Enviados"), form.get("dep_Recibidos")), ("on", "on"))
+        self.assertEqual(self.traxion.exportes, ["depositos"])
+        self.assert_nada_peligroso()
+
+    def test_ventas_guarda_el_archivo_tal_cual(self):
+        self.sesion.iniciar()
+        archivo, registros = reportes.ventas(self.sesion.page, date(2026, 10, 15), Path(self.tmp.name))
+        self.assertEqual((archivo.name, registros), ("Ventas_2026-10-15.csv", 3))
+        self.assertEqual(self.traxion.busquedas["ventas"]["desde_fecha"], "15/10/2026")
+        self.assertEqual(archivo.read_bytes(), fake_traxion.EXPORTES["ventas"][1].encode("iso-8859-1"))
+
+    def test_exporte_que_devuelve_html_es_error(self):
+        self.traxion.exporte_roto = "ventas"
+        self.sesion.iniciar()
+        with self.assertRaisesRegex(traxion.BotError, "pagina HTML"):
+            reportes.ventas(self.sesion.page, date(2026, 10, 15), Path(self.tmp.name))
+
+    def test_corrida_completa(self):
+        self.sesion.iniciar()
+        res = reportes.ejecutar(self.sesion, date(2026, 10, 15), Path(self.tmp.name))
+        self.assertEqual([(r.nombre, r.error, r.registros) for r in res],
+                         [("Depósitos", None, 0), ("Cuentas", None, 258), ("Ventas", None, 3)])
+        self.assertEqual(self.traxion.pedidos.count("/login"), 1)  # sin errores no hay relogin
+        self.assert_nada_peligroso()
 
     def test_el_log_no_guarda_la_sesion(self):
         self.sesion.iniciar()
