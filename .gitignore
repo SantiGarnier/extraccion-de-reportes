@@ -1,0 +1,13 @@
+# Secretos
+.env
+
+# Datos personales / financieros y sesiones: nunca al repo
+debug/
+logs/
+reportes/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
