@@ -11,8 +11,8 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 import config
-from traxion import (BotError, Sesion, abrir_pestania, buscar, exportar_excel, guardar_debug, ir_a, log,
-                     marcar_botones, poner_valor)
+from traxion import (BotError, Sesion, abrir_pestania, buscar, es_pantalla_login, exportar_excel, guardar_debug,
+                     ir_a, log, marcar_botones, poner_valor)
 
 
 @dataclass
@@ -112,11 +112,22 @@ def motivo_de(e: Exception) -> str:
     return texto.splitlines()[0] if texto else type(e).__name__
 
 
+def sesion_usable(page: Page | None) -> bool:
+    """Si se puede seguir en la misma sesion: no esta en el login, se ve el menu lateral y nada quedo cargando."""
+    try:
+        return bool(page is not None and not page.is_closed() and not es_pantalla_login(page)
+                    and page.locator("ul.page-sidebar-menu").filter(visible=True).count()
+                    and not page.locator(".blockUI").filter(visible=True).count())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def ejecutar(sesion: Sesion, fecha: date, carpeta: Path, reportes=None) -> list[Resultado]:
     """
-    Corre los reportes de a uno. Si uno falla, se anota el motivo y se sigue con el resto.
-    Despues de un error la pagina puede quedar en cualquier estado: se cierra sesion y se vuelve a
-    entrar. Si no se puede volver a entrar, los que faltan quedan con ese motivo.
+    Corre los reportes de a uno, en la MISMA sesion (Traxion no deja dos sesiones del mismo usuario).
+    Si uno falla, se anota el motivo y se sigue con el resto: cada reporte arranca desde el menu
+    lateral, asi que no hace falta volver a entrar. Solo se cierra sesion y se vuelve a entrar si la
+    pagina quedo en el login o trabada; si eso falla, los que faltan quedan con ese motivo.
     """
     resultados: list[Resultado] = []
     pendientes = list(reportes if reportes is not None else REPORTES)
@@ -136,7 +147,7 @@ def ejecutar(sesion: Sesion, fecha: date, carpeta: Path, reportes=None) -> list[
                 log(traceback.format_exc())
             if sesion.page is not None:
                 guardar_debug(sesion.page, f"{nombre}_error")
-        if pendientes:
+        if pendientes and not sesion_usable(sesion.page):
             try:
                 log("Se vuelve a iniciar sesion para seguir con el resto")
                 sesion.iniciar()

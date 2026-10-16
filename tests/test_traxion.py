@@ -108,9 +108,9 @@ class TestContraTraxionFalso(unittest.TestCase):
             return archivo, 1
         return reporte
 
-    def test_ejecutar_sigue_despues_de_un_error_y_vuelve_a_entrar(self):
-        def rompe(page, fecha, carpeta):
-            raise traxion.SinRespuesta("Buscar: la plataforma no respondio en 180 s")
+    def test_ejecutar_sigue_en_la_misma_sesion_despues_de_un_error(self):
+        def falla(page, fecha, carpeta):
+            raise traxion.BotError("'Desde fecha' quedo en '16/10/2026' en vez de '15/10/2026'")
 
         def bug(page, fecha, carpeta):
             raise ValueError("algo inesperado")
@@ -118,27 +118,38 @@ class TestContraTraxionFalso(unittest.TestCase):
         self.sesion.iniciar()
         carpeta = Path(self.tmp.name)
         res = reportes.ejecutar(self.sesion, date(2026, 10, 15), carpeta,
-                                [("A", self._ok("a")), ("B", rompe), ("C", bug), ("D", self._ok("d"))])
+                                [("A", self._ok("a")), ("B", falla), ("C", bug), ("D", self._ok("d"))])
         self.assertEqual([(r.nombre, r.archivo and r.archivo.name, r.error) for r in res], [
             ("A", "a.xls", None),
-            ("B", None, "Buscar: la plataforma no respondio en 180 s"),
+            ("B", None, "'Desde fecha' quedo en '16/10/2026' en vez de '15/10/2026'"),
             ("C", None, "algo inesperado"),
             ("D", "d.xls", None),
         ])
-        # despues de cada error se cerro sesion y se volvio a entrar
-        self.assertEqual(self.traxion.pedidos.count("/login"), 3)
-        self.assertEqual(self.traxion.pedidos.count("/salir/si"), 2)
+        # la pagina seguia usable: un solo login en toda la corrida (Traxion no deja dos sesiones)
+        self.assertEqual(self.traxion.pedidos.count("/login"), 1)
+        self.assertEqual(self.traxion.pedidos.count("/salir/si"), 0)
         self.assertIn("Traceback", self.leer_log())  # el error inesperado deja el detalle en el log
+
+    def test_ejecutar_vuelve_a_entrar_solo_si_la_sesion_se_perdio(self):
+        def vence(page, fecha, carpeta):
+            traxion.click_y_esperar(page, page.locator("#vencida"), "Buscar")  # -> SesionVencida
+
+        self.sesion.iniciar()
+        res = reportes.ejecutar(self.sesion, date(2026, 10, 15), Path(self.tmp.name),
+                                [("A", vence), ("B", self._ok("b"))])
+        self.assertEqual([(r.nombre, r.error is None) for r in res], [("A", False), ("B", True)])
+        self.assertIn("la sesion vencio", res[0].error)
+        self.assertEqual(self.traxion.pedidos.count("/login"), 2)
 
     def test_ejecutar_si_no_puede_volver_a_entrar_marca_los_que_faltan(self):
         def rompe_y_cambia_la_clave(page, fecha, carpeta):
             config.TRAXION_PASS = "vencida"  # el mock.patch.multiple del setUp la restaura
-            raise traxion.BotError("fallo")
+            traxion.click_y_esperar(page, page.locator("#vencida"), "Buscar")  # -> SesionVencida
 
         self.sesion.iniciar()
         res = reportes.ejecutar(self.sesion, date(2026, 10, 15), Path(self.tmp.name),
                                 [("A", rompe_y_cambia_la_clave), ("B", self._ok("b")), ("C", self._ok("c"))])
-        self.assertEqual(res[0].error, "fallo")
+        self.assertIn("la sesion vencio", res[0].error)
         for r in res[1:]:
             self.assertIsNone(r.archivo)
             self.assertIn("no se pudo volver a iniciar sesion (Login fallido", r.error)

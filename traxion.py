@@ -328,9 +328,15 @@ def poner_valor(page: Page, label: str, valor: str, aceptables: tuple[str, ...] 
     if campo.input_value() in (valor, *aceptables):
         return
     campo.fill(valor)
-    campo.press("Escape")  # cierra el calendario/reloj desplegable para que no tape "Buscar"
-    page.evaluate("el => { if (window.jQuery && jQuery(el).datepicker) jQuery(el).datepicker('hide'); }",
-                  campo.element_handle())
+    # bootstrap-datepicker guarda la fecha aparte del texto: si no se le avisa, al cerrarse vuelve a
+    # escribir la fecha que tenia (paso en testing el 2026-10-16). Se le carga el valor por su API y se
+    # cierra el desplegable para que no tape "Buscar". Lo mismo con el reloj (timepicker).
+    page.evaluate("""([el, v]) => {
+        const $ = window.jQuery;
+        if ($ && $(el).data('datepicker')) { $(el).datepicker('update', v); $(el).datepicker('hide'); }
+        if ($ && $(el).data('timepicker')) { $(el).timepicker('setTime', v); }
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+    }""", [campo.element_handle(), valor])
     if campo.input_value() not in (valor, *aceptables):
         raise BotError(f"'{label}' quedo en '{campo.input_value()}' en vez de '{valor}'")
 
@@ -359,13 +365,21 @@ def exportar_excel(page: Page, destino: Path, accion: str, columnas: list[str],
     Confirmar marcados...): se clickea SOLO el item con texto exacto "Exportar a Excel".
     `destino` va sin extension: se usa la del archivo que manda Traxion.
     """
-    funciones = page.locator("a.dropdown-toogle", has_text=re.compile(r"^\s*Funciones\s*$")).filter(visible=True)
-    if funciones.count() != 1:
-        raise BotError(f"{accion}: se esperaba un boton 'Funciones' y hay {funciones.count()}")
-    item = funciones.locator("xpath=..").locator(".dropdown-menu a").filter(
-        has_text=re.compile(r"^\s*Exportar a Excel\s*$"))
-    if item.count() != 1:
-        raise BotError(f"{accion}: se esperaba un item 'Exportar a Excel' y hay {item.count()}")
+    # Despues de "Buscar" la barra de la grilla puede aparecer duplicada (en Cuentas hubo 2 "Funciones"
+    # visibles el 2026-10-16): se usa la primera cuyo menu tenga exactamente un "Exportar a Excel".
+    candidatos = page.locator("a.dropdown-toogle", has_text=re.compile(r"^\s*Funciones\s*$")).filter(visible=True)
+    funciones = item = None
+    for f in candidatos.all():
+        items = f.locator("xpath=..").locator(".dropdown-menu a").filter(
+            has_text=re.compile(r"^\s*Exportar a Excel\s*$"))
+        if items.count() == 1:
+            funciones, item = f, items
+            break
+    if item is None:
+        raise BotError(f"{accion}: no aparecio 'Funciones' con un item 'Exportar a Excel' "
+                       f"({candidatos.count()} boton(es) 'Funciones' visibles)")
+    if candidatos.count() > 1:
+        log(f"  {accion}: hay {candidatos.count()} botones 'Funciones' visibles; se usa el primero con 'Exportar a Excel'")
     if not item.is_visible():
         funciones.click()
         item.wait_for(state="visible")

@@ -18,6 +18,21 @@ HOY = "15/10/2026"  # lo que la plataforma precarga en los campos de fecha
 _HEAD = """<head><meta charset="utf-8"><title>Traxion</title>
 <style>.blockUI{position:fixed;inset:0;background:#0003}</style>
 <script>
+// Imita a bootstrap-datepicker: guarda la fecha aparte del texto y, al perder el foco, vuelve a escribir
+// la que tenia guardada si nadie se la actualizo por su API (lo que paso en testing el 2026-10-16).
+window.jQuery = el => ({
+  data: k => (k === 'datepicker' && el.classList && el.classList.contains('bootstrap-date-picker')) ? {} : undefined,
+  datepicker: (cmd, v) => { if (cmd === 'update') { el.dataset.interna = v; el.value = v; } },
+  timepicker: () => {},
+});
+document.addEventListener('focusin', ev => {
+  const el = ev.target;
+  if (el.classList.contains('bootstrap-date-picker') && el.dataset.interna === undefined) el.dataset.interna = el.value;
+});
+document.addEventListener('focusout', ev => {
+  const el = ev.target;
+  if (el.classList.contains('bootstrap-date-picker') && el.dataset.interna !== undefined) el.value = el.dataset.interna;
+});
 document.addEventListener('click', async ev => {
   const toggle = ev.target.closest('[data-toggle=dropdown]');
   if (toggle) {
@@ -154,14 +169,15 @@ def _pantalla(titulo: str, pestanias: list[tuple[str, str, str]], activa: str, f
         f'<li><a href="#" data-ajax="{href}">{texto}</a></li>' if href.startswith("/peligro")
         else f'<li><a disable_ajaxifier href="{href}"><i class="fa fa-file-text"></i>{texto}</a></li>'
         for texto, href in funciones.items())
+    barra = f"""<div class="btn-group"><a class="btn btn-sm purple dropdown-toogle" data-toggle="dropdown">
+  <i class="icon-settings"></i><span class="details">Funciones</span></a>
+  <ul class="dropdown-menu" style="display:none">{items}</ul></div>"""
     contenido = f"""<h1 class="page-title">{titulo}</h1>
 <form><div class="ui-tabs"><ul class="ui-tabs-nav">{nav}</ul>{paneles}</div>
 <input class="btn blue" type="submit" value="Buscar" data-ajax="/buscar/{pantalla}">
 <input class="btn red" type="submit" value="Limpiar" data-ajax="/{pantalla}"></form>
 <div class="caption">Filtros</div><div class="caption">Datos: {datos}</div>
-<div class="btn-group"><a class="btn btn-sm purple dropdown-toogle" data-toggle="dropdown">
-  <i class="icon-settings"></i><span class="details">Funciones</span></a>
-  <ul class="dropdown-menu" style="display:none">{items}</ul></div>"""
+{barra}{barra if datos else ""}"""  # con datos, la barra aparece duplicada (como Cuentas en testing)
     return _MARCO.replace("{contenido}", contenido)
 
 
