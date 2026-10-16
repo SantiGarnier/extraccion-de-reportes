@@ -34,8 +34,8 @@ TIMEOUT_BUSQUEDA_LARGA_MS = int(os.getenv("TIMEOUT_BUSQUEDA_LARGA_MS", "180000")
 # Los reportes tienen datos financieros y personales: carpeta en .gitignore. Una subcarpeta por dia.
 REPORTES_DIR = _ruta("REPORTES_DIR", "reportes")
 REPORTES_RETENCION_DIAS = int(os.getenv("REPORTES_RETENCION_DIAS", "30"))
-# El cron corre a las 23:59 y la corrida suele pasar la medianoche. La fecha del reporte se fija al
-# arrancar: si arranca antes de esta hora (00:00 a 05:59 por defecto) es el reporte del dia anterior.
+# El cron corre pasada la medianoche y saca el dia anterior completo. La fecha del reporte se fija al
+# arrancar: si arranca antes de esta hora (00:00 a 05:59 por defecto) es el dia anterior; despues, es hoy.
 HORA_CORTE_FECHA = int(os.getenv("HORA_CORTE_FECHA", "6"))
 
 DEBUG_HTML = _bool("DEBUG_HTML", False)

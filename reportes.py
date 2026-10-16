@@ -25,9 +25,9 @@ class Resultado:
 
 def fecha_del_reporte(ahora: datetime | None = None) -> date:
     """
-    La fecha se fija UNA vez, al arrancar. El cron corre a las 23:59: si la corrida pasa la
-    medianoche, la fecha sigue siendo la del dia en que arranco. Si el bot arranca de madrugada
-    (antes de HORA_CORTE_FECHA, por ejemplo porque el cron se demoro), es el reporte de ayer.
+    La fecha se fija UNA vez, al arrancar. El cron corre pasada la medianoche: si el bot arranca
+    antes de HORA_CORTE_FECHA es el reporte del dia anterior completo (asi entra lo de las 23:59).
+    Despues de esa hora (una corrida a mano durante el dia) es el de hoy.
     """
     ahora = ahora or datetime.now()
     if ahora.hour < config.HORA_CORTE_FECHA:
@@ -57,7 +57,7 @@ def limpiar_reportes(hoy: date | None = None) -> None:
 
 # --- Reportes ---
 # Depositos y Ventas usan la pestania "Por Filtros" con la fecha del reporte de 00:00:00 a 23:59:59
-# (y no "Hoy"): asi da igual si la corrida de las 23:59 pasa la medianoche o si se repite un dia.
+# (y no "Hoy"): la corrida de la madrugada pide el dia anterior, y con --fecha se puede repetir cualquiera.
 
 def _filtrar_por_fecha(page: Page, fecha: date) -> None:
     dia = f"{fecha:%d/%m/%Y}"

@@ -19,12 +19,13 @@ class TestFechaDelReporte(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_cron_de_las_2359_es_el_mismo_dia(self):
-        self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 15, 23, 59)), date(2026, 10, 15))
-
-    def test_si_arranca_pasada_la_medianoche_es_el_dia_anterior(self):
-        self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 16, 0, 2)), date(2026, 10, 15))
+    def test_cron_pasada_la_medianoche_saca_el_dia_anterior(self):
+        self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 16, 0, 10)), date(2026, 10, 15))
+        self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 16, 0, 0)), date(2026, 10, 15))
         self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 16, 5, 59)), date(2026, 10, 15))
+
+    def test_a_mano_a_la_noche_es_hoy(self):
+        self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 15, 23, 59)), date(2026, 10, 15))
 
     def test_de_dia_es_hoy(self):
         self.assertEqual(reportes.fecha_del_reporte(datetime(2026, 10, 16, 6, 0)), date(2026, 10, 16))

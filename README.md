@@ -51,15 +51,18 @@ Sale con código **0** si todo salió bien y **1** si falló algún reporte, el 
    Si falló alguno, el asunto termina en "- CON ERRORES". Si no se pudo entrar a Traxion, el mail
    igual sale, con el motivo.
 
-### Fecha del reporte (corrida de las 23:59)
+### Fecha del reporte (corrida pasada la medianoche)
 
-La fecha se fija **una sola vez, al arrancar**:
+El cron corre **pasada la medianoche** y saca el **día anterior completo**, de 00:00:00 a 23:59:59. Así entra
+también lo que pasó a las 23:59. La fecha se fija **una sola vez, al arrancar**:
 
-- Si el bot arranca a las 23:59 del 15/10 y termina pasada la medianoche, sigue sacando los reportes del **15/10**.
-  Depósitos y Ventas no usan las pestañas "Hoy": piden siempre la fecha del reporte en "Por Filtros".
-- Si arranca de madrugada (antes de `HORA_CORTE_FECHA`, por defecto las 6:00), por ejemplo porque el cron se
-  demoró, saca los del **día anterior**.
-- Con `--fecha AAAA-MM-DD` se fuerza una fecha.
+- Si el bot arranca antes de `HORA_CORTE_FECHA` (por defecto las 6:00), por ejemplo a las 00:10 del 16/10,
+  saca los reportes del **15/10**. Depósitos y Ventas no usan las pestañas "Hoy": piden la fecha del reporte en
+  "Por Filtros".
+- Si arranca después de esa hora (una corrida a mano durante el día), saca los de **hoy**, que hasta ese momento
+  están incompletos.
+- Con `--fecha AAAA-MM-DD` se fuerza una fecha (por ejemplo, para repetir un día).
+- Los saldos de Cuentas son los del momento de la corrida: a las 00:10 quedan como el cierre del día anterior.
 
 Los archivos quedan en `reportes/AAAA-MM-DD/` y se borran a los `REPORTES_RETENCION_DIAS` (por defecto 30).
 
@@ -74,11 +77,14 @@ Todo sale del `.env`: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_
 
 ## Cron (servidor Linux)
 
-Ejemplo para correr todos los días a las 23:59:
+Ejemplo para correr todos los días a las 00:10 (saca el día anterior):
 
 ```cron
-59 23 * * * cd /opt/extraccion-de-reportes && flock -n /tmp/extraccion-de-reportes.lock ./venv/bin/python main.py >> logs/cron.log 2>&1
+10 0 * * * cd /opt/extraccion-de-reportes && flock -n /tmp/extraccion-de-reportes.lock ./venv/bin/python main.py >> logs/cron.log 2>&1
 ```
+
+- Cualquier hora entre 00:00 y `HORA_CORTE_FECHA` sirve. Unos minutos de margen después de las 00:00 dejan
+  que Traxion termine de registrar lo de las 23:59.
 
 - **El servidor tiene que estar en hora argentina** (`timedatectl set-timezone America/Argentina/Buenos_Aires`):
   la fecha del reporte y el horario del cron salen del reloj local.
