@@ -13,7 +13,7 @@ Sale con 0 si todo salio bien, y con 1 si fallo algun reporte, el login o el mai
 import argparse
 import sys
 import tempfile
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -22,7 +22,7 @@ import config
 import correo
 import reportes
 from reportes import Resultado
-from traxion import Sesion, guardar_debug, limpiar_debug, log
+from traxion import Sesion, ahora, guardar_debug, limpiar_debug, log
 
 
 def correr(fecha: date, solo_login: bool) -> list[Resultado]:
@@ -63,8 +63,8 @@ def probar_mail(fecha: date) -> bool:
         ejemplo.write_text("columna;valor\nprueba;1\n", encoding="utf-8")
         resultados = [Resultado("Prueba", archivo=ejemplo),
                       Resultado("Ejemplo de reporte fallido", error="esto es un error de ejemplo")]
-        ahora = datetime.now()
-        msg = correo.armar(fecha, resultados, ahora, ahora)
+        momento = ahora()
+        msg = correo.armar(fecha, resultados, momento, momento)
         msg.replace_header("Subject", f"[PRUEBA] {msg['Subject']}")
         return mandar(msg)
 
@@ -89,7 +89,7 @@ def main() -> int:
                         help="manda un mail de prueba con un adjunto chico (no entra a Traxion)")
     args = parser.parse_args()
 
-    inicio = datetime.now()
+    inicio = ahora()
     fecha = args.fecha or reportes.fecha_del_reporte(inicio)
 
     if args.probar_mail:
@@ -103,7 +103,7 @@ def main() -> int:
     todo_ok = all(r.error is None for r in resultados)
 
     if not args.solo_login and not args.sin_mail:
-        todo_ok = mandar(correo.armar(fecha, resultados, inicio, datetime.now())) and todo_ok
+        todo_ok = mandar(correo.armar(fecha, resultados, inicio, ahora())) and todo_ok
 
     fallidos = [r.nombre for r in resultados if r.error]
     log(f"=== Fin {'OK' if todo_ok else 'con ERROR'}" + (f" (fallaron: {', '.join(fallidos)})" if fallidos else "")

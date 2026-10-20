@@ -1,6 +1,7 @@
 """Configuracion del bot. Todo sale del archivo .env (nunca hardcodear credenciales)."""
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -23,6 +24,10 @@ def _ruta(nombre: str, default: str) -> Path:
 TRAXION_URL = os.getenv("TRAXION_URL", "https://testing.telerecargas.com.ar/")
 TRAXION_USER = os.getenv("TRAXION_USER", "")
 TRAXION_PASS = os.getenv("TRAXION_PASS", "")
+
+# Fechas y horas del bot (fecha del reporte, log, mail, saldos de Cuentas) en hora de Buenos Aires,
+# aunque el servidor este en UTC
+ZONA_HORARIA = ZoneInfo(os.getenv("ZONA_HORARIA", "America/Argentina/Buenos_Aires"))
 
 HEADLESS = _bool("HEADLESS", False)
 # Tope de seguridad: el bot avanza apenas ocurre el evento esperado; esto solo corta si el

@@ -7,7 +7,7 @@ from email.message import EmailMessage
 
 import config
 from reportes import Resultado
-from traxion import BotError, log
+from traxion import BotError, log, tapar_sesion
 
 
 def _tamanio(bytes_: int) -> str:
@@ -35,11 +35,12 @@ def armar(fecha: date, resultados: list[Resultado], inicio: datetime, fin: datet
     if fallidos:
         asunto += " - CON ERRORES"
 
-    lineas = [f"Reportes de Traxion del {fecha:%d/%m/%Y} (corrida del {inicio:%d/%m %H:%M} al {fin:%d/%m %H:%M}).", ""]
+    lineas = [f"Reportes de Traxion del {fecha:%d/%m/%Y} (corrida del {inicio:%d/%m %H:%M} al {fin:%d/%m %H:%M}, "
+              "hora de Buenos Aires).", ""]
     if ok:
         lineas.append("Generados (van adjuntos):")
         lineas += [f"  - {r.nombre}: {r.archivo.name} ({_tamanio(r.archivo.stat().st_size)}{_registros(r.registros)})"
-                   for r in ok]
+                   + (f". {r.nota}" if r.nota else "") for r in ok]
         lineas.append("")
     if fallidos:
         lineas.append("No se pudieron generar:")
@@ -53,7 +54,8 @@ def armar(fecha: date, resultados: list[Resultado], inicio: datetime, fin: datet
     msg["From"] = config.SMTP_FROM
     msg["To"] = ", ".join(config.SMTP_TO)
     msg["Subject"] = asunto
-    msg.set_content("\n".join(lineas))
+    # Segunda barrera: aunque un motivo de error llegue con la URL de Traxion, _s/_k no salen en el mail
+    msg.set_content(tapar_sesion("\n".join(lineas)))
     for r in ok:
         tipo, _ = mimetypes.guess_type(r.archivo.name)
         principal, sub = (tipo or "application/octet-stream").split("/", 1)

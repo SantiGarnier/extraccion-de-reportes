@@ -28,17 +28,23 @@ _PARAMS_SESION = re.compile(r"\b(_[sk]=)[^&\"'\s<>]+")
 
 
 def tapar_sesion(texto: str) -> str:
-    """Reemplaza los valores de _s y _k por REDACTADO (logs, mensajes de error, HTML de debug)."""
+    """Reemplaza los valores de _s y _k por REDACTADO (logs, mensajes de error, mail, HTML de debug)."""
     return _PARAMS_SESION.sub(r"\1REDACTADO", texto)
 
 
+def ahora() -> datetime:
+    """Fecha y hora de Buenos Aires (ZONA_HORARIA), no la del servidor (que esta en UTC)."""
+    return datetime.now(config.ZONA_HORARIA)
+
+
 def log(msg: str) -> None:
-    linea = f"[{datetime.now():%H:%M:%S}] {tapar_sesion(msg)}"
+    momento = ahora()
+    linea = f"[{momento:%H:%M:%S}] {tapar_sesion(msg)}"
     print(linea, flush=True)
     try:
         config.LOG_DIR.mkdir(exist_ok=True)
-        with open(config.LOG_DIR / f"bot_{datetime.now():%Y%m%d}.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now():%Y-%m-%d} {linea}\n")
+        with open(config.LOG_DIR / f"bot_{momento:%Y%m%d}.log", "a", encoding="utf-8") as f:
+            f.write(f"{momento:%Y-%m-%d} {linea}\n")
     except OSError:
         pass  # que un problema con el archivo de log nunca frene el bot
 
@@ -47,7 +53,7 @@ def guardar_debug(page: Page, etiqueta: str) -> None:
     """Captura ante un error (no lleva la URL -> no lleva la sesion). HTML solo con DEBUG_HTML=true."""
     config.DEBUG_DIR.mkdir(exist_ok=True)
     etiqueta = re.sub(r"[^\w.-]", "_", etiqueta)[:80]
-    base = config.DEBUG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_{etiqueta}"
+    base = config.DEBUG_DIR / f"{ahora():%Y%m%d_%H%M%S}_{etiqueta}"
     try:
         page.screenshot(path=f"{base}.png", full_page=True)
         if config.DEBUG_HTML:
@@ -143,19 +149,36 @@ class Sesion:
     def __init__(self, context: BrowserContext):
         self.context = context
         self.page: Page | None = None
+        self._cerrando = False
 
     def iniciar(self) -> None:
         self.terminar(timeout=5000)  # la pagina anterior puede estar trabada: tope corto para el logout
         self.page = self.context.new_page()
-        # confirm()/alert() de JS: Playwright los cancela por defecto; los aceptamos y los logueamos
-        self.page.on("dialog", lambda d: (log(f"Dialogo JS: {d.message!r} -> aceptar"), d.accept()))
+        self.page.on("dialog", self._dialogo)
         login(self.page)
+
+    def _dialogo(self, dialogo) -> None:
+        """
+        confirm()/alert() de JS. Ningun paso de los reportes los necesita, y en los mismos menus que
+        "Exportar a Excel" estan Anular, Suspender y Confirmar marcados: se CANCELAN siempre, salvo
+        mientras se cierra sesion (por si "Salir" pide confirmacion con un confirm()).
+        """
+        if self._cerrando:
+            log(f"Dialogo JS al cerrar sesion: {dialogo.message!r} -> aceptar")
+            dialogo.accept()
+        else:
+            log(f"AVISO: dialogo JS inesperado: {dialogo.message!r} -> cancelar")
+            dialogo.dismiss()
 
     def terminar(self, timeout: int = 15000) -> None:
         """Cierra la sesion en Traxion (si se puede) y la pagina. Nunca deja una sesion viva al descartarla."""
         if self.page is None:
             return
-        cerrar_sesion_traxion(self.page, timeout)
+        self._cerrando = True
+        try:
+            cerrar_sesion_traxion(self.page, timeout)
+        finally:
+            self._cerrando = False
         try:
             self.page.close()
         except Exception:  # noqa: BLE001

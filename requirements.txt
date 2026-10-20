@@ -1,2 +1,4 @@
 playwright==1.63.0
 python-dotenv==1.2.3
+# zonas horarias (America/Argentina/Buenos_Aires) aunque el sistema no las traiga
+tzdata==2026.5

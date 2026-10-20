@@ -2,13 +2,14 @@
 import smtplib
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 import config
 import correo
 import reportes
+import traxion
 from reportes import Resultado
 from traxion import BotError
 
@@ -32,6 +33,34 @@ class TestFechaDelReporte(unittest.TestCase):
 
     def test_cambio_de_mes_y_anio(self):
         self.assertEqual(reportes.fecha_del_reporte(datetime(2027, 1, 1, 0, 1)), date(2026, 12, 31))
+
+    def test_servidor_en_utc_usa_la_hora_de_buenos_aires(self):
+        # 03:10 UTC del 16/10 = 00:10 en Buenos Aires: es el reporte del 15/10
+        utc = datetime(2026, 10, 16, 3, 10, tzinfo=timezone.utc)
+        with mock.patch("traxion.datetime") as reloj:
+            reloj.now.side_effect = lambda tz=None: utc.astimezone(tz) if tz else utc.replace(tzinfo=None)
+            self.assertEqual(traxion.ahora().strftime("%d/%m %H:%M"), "16/10 00:10")
+            self.assertEqual(reportes.fecha_del_reporte(), date(2026, 10, 15))
+        # y a las 23:50 UTC del 15/10 en Buenos Aires son las 20:50 del 15/10: sigue siendo hoy (corrida a mano)
+        self.assertEqual(reportes.fecha_del_reporte(
+            datetime(2026, 10, 15, 23, 50, tzinfo=timezone.utc).astimezone(config.ZONA_HORARIA)), date(2026, 10, 15))
+
+
+class TestTaparSesionEnElMail(unittest.TestCase):
+    def test_motivo_de_tapa_la_url(self):
+        e = Exception("Timeout 180000ms exceeded.\n  navigating to \"https://x/tr4?_s=ABC123&_k=DEF456&12\"")
+        self.assertEqual(reportes.motivo_de(e), "Timeout 180000ms exceeded.")
+        e = Exception("fallo en https://x/tr4?_s=ABC123&_k=DEF456&12")
+        self.assertEqual(reportes.motivo_de(e), "fallo en https://x/tr4?_s=REDACTADO&_k=REDACTADO&12")
+
+    def test_el_cuerpo_del_mail_nunca_lleva_la_sesion(self):
+        with mock.patch.multiple(config, SMTP_FROM="a@x.com", SMTP_TO=["b@x.com"], MAIL_ASUNTO="R"):
+            res = [Resultado("Ventas", error="Ventas: algo en https://x/tr4?_s=ABC123&_k=DEF456")]
+            ahora = datetime(2026, 10, 16, 0, 10)
+            cuerpo = correo.armar(date(2026, 10, 15), res, ahora, ahora).get_body().get_content()
+        self.assertNotIn("ABC123", cuerpo)
+        self.assertNotIn("DEF456", cuerpo)
+        self.assertIn("_s=REDACTADO", cuerpo)
 
 
 class TestLimpiarReportes(unittest.TestCase):
@@ -80,11 +109,13 @@ class TestCorreo(unittest.TestCase):
 
     def test_cantidad_de_registros(self):
         res = [Resultado("Depósitos", archivo=self.archivo("dep.csv"), registros=0),
-               Resultado("Cuentas", archivo=self.archivo("cue.csv"), registros=1258),
+               Resultado("Cuentas", archivo=self.archivo("cue.csv"), registros=1258,
+                         nota="Saldos al 16/10/2026 00:10 (hora de Buenos Aires)"),
                Resultado("Ventas", archivo=self.archivo("ven.csv"), registros=1)]
         cuerpo = correo.armar(date(2026, 10, 15), res, self.inicio, self.fin).get_body().get_content()
         self.assertIn("Depósitos: dep.csv (2 KB, sin movimientos)", cuerpo)
-        self.assertIn("Cuentas: cue.csv (2 KB, 1.258 registros)", cuerpo)
+        self.assertIn("Cuentas: cue.csv (2 KB, 1.258 registros). Saldos al 16/10/2026 00:10 (hora de Buenos Aires)",
+                      cuerpo)
         self.assertIn("Ventas: ven.csv (2 KB, 1 registro)", cuerpo)
 
     def test_archivo_chico_en_bytes(self):

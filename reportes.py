@@ -1,6 +1,6 @@
 """
 Los reportes y la corrida: fecha del reporte, carpeta del dia, un reporte por vez con su resultado.
-Cada reporte es una funcion (page, fecha, carpeta) -> (archivo descargado, cantidad de registros).
+Cada reporte es una funcion (page, fecha, carpeta) -> Exportado (archivo, cantidad de registros, nota).
 """
 import shutil
 import traceback
@@ -11,8 +11,15 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 import config
-from traxion import (BotError, Sesion, abrir_pestania, buscar, es_pantalla_login, exportar_excel, guardar_debug,
-                     ir_a, log, marcar_botones, poner_valor)
+from traxion import (BotError, Sesion, abrir_pestania, ahora, buscar, es_pantalla_login, exportar_excel,
+                     guardar_debug, ir_a, log, marcar_botones, poner_valor, tapar_sesion)
+
+
+@dataclass
+class Exportado:
+    archivo: Path
+    registros: int
+    nota: str | None = None  # aclaracion para el mail (por ejemplo, a que momento corresponden los saldos)
 
 
 @dataclass
@@ -21,18 +28,19 @@ class Resultado:
     archivo: Path | None = None
     error: str | None = None
     registros: int | None = None
+    nota: str | None = None
 
 
-def fecha_del_reporte(ahora: datetime | None = None) -> date:
+def fecha_del_reporte(momento: datetime | None = None) -> date:
     """
-    La fecha se fija UNA vez, al arrancar. El cron corre pasada la medianoche: si el bot arranca
-    antes de HORA_CORTE_FECHA es el reporte del dia anterior completo (asi entra lo de las 23:59).
-    Despues de esa hora (una corrida a mano durante el dia) es el de hoy.
+    La fecha se fija UNA vez, al arrancar, en hora de Buenos Aires (el servidor esta en UTC). El cron
+    corre pasada la medianoche: si el bot arranca antes de HORA_CORTE_FECHA es el reporte del dia
+    anterior completo (asi entra lo de las 23:59). Despues de esa hora (a mano, de dia) es el de hoy.
     """
-    ahora = ahora or datetime.now()
-    if ahora.hour < config.HORA_CORTE_FECHA:
-        return ahora.date() - timedelta(days=1)
-    return ahora.date()
+    momento = momento or ahora()
+    if momento.hour < config.HORA_CORTE_FECHA:
+        return momento.date() - timedelta(days=1)
+    return momento.date()
 
 
 def carpeta_del_dia(fecha: date) -> Path:
@@ -45,7 +53,7 @@ def limpiar_reportes(hoy: date | None = None) -> None:
     """Borra las carpetas reportes/AAAA-MM-DD con mas de REPORTES_RETENCION_DIAS (tienen datos personales)."""
     if not config.REPORTES_DIR.exists():
         return
-    limite = (hoy or date.today()) - timedelta(days=config.REPORTES_RETENCION_DIAS)
+    limite = (hoy or ahora().date()) - timedelta(days=config.REPORTES_RETENCION_DIAS)
     for carpeta in config.REPORTES_DIR.iterdir():
         try:
             if carpeta.is_dir() and date.fromisoformat(carpeta.name) < limite:
@@ -67,7 +75,7 @@ def _filtrar_por_fecha(page: Page, fecha: date) -> None:
     poner_valor(page, "Hasta hora", "23:59:59")
 
 
-def depositos(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
+def depositos(page: Page, fecha: date, carpeta: Path) -> Exportado:
     ir_a(page, "FINANCIERO", "Depositos", "Administracion de Depositos")
     abrir_pestania(page, "Por Filtros", "Desde fecha")
     _filtrar_por_fecha(page, fecha)
@@ -77,23 +85,27 @@ def depositos(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
     archivo = exportar_excel(page, carpeta / f"Depositos_{fecha.isoformat()}", "Depositos",
                              columnas=["Fecha", "Nro.Ope.", "Cuenta", "Importe", "Estado"],
                              timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
-    return archivo, registros
+    return Exportado(archivo, registros)
 
 
-def cuentas(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
-    # Los saldos son los del momento de la consulta: no hay "saldo de ayer"
+def cuentas(page: Page, fecha: date, carpeta: Path) -> Exportado:
+    """
+    Los saldos son los del MOMENTO de la consulta, no los de `fecha` (no hay "saldo de ayer"): el archivo
+    lleva la fecha y hora reales de la consulta (Buenos Aires), y el mail lo aclara.
+    """
     ir_a(page, "GESTORES", "Cuentas", "Cuentas")
     abrir_pestania(page, "General", "Mostrar")
     marcar_botones(page, "Mostrar", ["Cta.Cte.", "Saldo Disponible", "Saldo Virtual"])
+    consulta = ahora()
     # con los saldos marcados la busqueda es lenta (~40 s en produccion)
     registros = buscar(page, "Cuentas", timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
-    archivo = exportar_excel(page, carpeta / f"Cuentas_{fecha.isoformat()}", "Cuentas",
+    archivo = exportar_excel(page, carpeta / f"Cuentas_{consulta:%Y-%m-%d_%H%M}", "Cuentas",
                              columnas=["Numero", "Nombre", "Cta.Cte.", "Saldo Disponible", "Saldo Virtual"],
                              timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
-    return archivo, registros
+    return Exportado(archivo, registros, nota=f"Saldos al {consulta:%d/%m/%Y %H:%M} (hora de Buenos Aires)")
 
 
-def ventas(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
+def ventas(page: Page, fecha: date, carpeta: Path) -> Exportado:
     ir_a(page, "REPORTES", "Ventas", "Consulta de Ventas")
     abrir_pestania(page, "Por Filtros", "Desde fecha")
     _filtrar_por_fecha(page, fecha)
@@ -101,15 +113,16 @@ def ventas(page: Page, fecha: date, carpeta: Path) -> tuple[Path, int]:
     archivo = exportar_excel(page, carpeta / f"Ventas_{fecha.isoformat()}", "Ventas",
                              columnas=["Nro.Ope.", "Fecha", "Producto", "Estado", "Importe"],
                              timeout=config.TIMEOUT_BUSQUEDA_LARGA_MS)
-    return archivo, registros
+    return Exportado(archivo, registros)
 
 
 REPORTES = [("Depósitos", depositos), ("Cuentas", cuentas), ("Ventas", ventas)]
 
 
 def motivo_de(e: Exception) -> str:
+    """Primera linea del error, con _s/_k tapados: va al mail (los errores de Playwright pueden traer la URL)."""
     texto = str(e).strip()
-    return texto.splitlines()[0] if texto else type(e).__name__
+    return tapar_sesion(texto.splitlines()[0]) if texto else type(e).__name__
 
 
 def sesion_usable(page: Page | None) -> bool:
@@ -135,9 +148,9 @@ def ejecutar(sesion: Sesion, fecha: date, carpeta: Path, reportes=None) -> list[
         nombre, funcion = pendientes.pop(0)
         log(f"--- {nombre} ---")
         try:
-            archivo, registros = funcion(sesion.page, fecha, carpeta)
-            resultados.append(Resultado(nombre, archivo=archivo, registros=registros))
-            log(f"{nombre}: OK ({archivo.name}, {registros} registros)")
+            hecho = funcion(sesion.page, fecha, carpeta)
+            resultados.append(Resultado(nombre, archivo=hecho.archivo, registros=hecho.registros, nota=hecho.nota))
+            log(f"{nombre}: OK ({hecho.archivo.name}, {hecho.registros} registros)")
             continue
         except Exception as e:  # noqa: BLE001 - un reporte que falla no puede frenar a los demas
             motivo = motivo_de(e)

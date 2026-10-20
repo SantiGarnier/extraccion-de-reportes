@@ -4,7 +4,7 @@ Correr desde la raiz del repo:  python -m unittest -v
 """
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -105,7 +105,7 @@ class TestContraTraxionFalso(unittest.TestCase):
             self.assertTrue(page.get_by_text("GESTORES", exact=True).count())  # pagina logueada
             archivo = carpeta / f"{nombre}.xls"
             archivo.write_text("datos", encoding="utf-8")
-            return archivo, 1
+            return reportes.Exportado(archivo, 1)
         return reporte
 
     def test_ejecutar_sigue_en_la_misma_sesion_despues_de_un_error(self):
@@ -161,10 +161,15 @@ class TestContraTraxionFalso(unittest.TestCase):
         peligrosos = [p for p in self.traxion.pedidos if p.startswith("/peligro")]
         self.assertEqual(peligrosos, [], "se clickeo una accion peligrosa de 'Funciones'")
 
-    def test_cuentas(self):
+    def test_cuentas_lleva_la_fecha_y_hora_real_de_los_saldos(self):
         self.sesion.iniciar()
-        archivo, registros = reportes.cuentas(self.sesion.page, date(2026, 10, 14), Path(self.tmp.name))
-        self.assertEqual((archivo.name, registros), ("Cuentas_2026-10-14.csv", 258))
+        # el cron corre el 16/10 a las 00:10 (03:10 UTC) y pide el 15/10: los saldos son de las 00:10 del 16
+        consulta = datetime(2026, 10, 16, 3, 10, tzinfo=timezone.utc).astimezone(config.ZONA_HORARIA)
+        with mock.patch.object(reportes, "ahora", return_value=consulta):
+            hecho = reportes.cuentas(self.sesion.page, date(2026, 10, 15), Path(self.tmp.name))
+        archivo, registros = hecho.archivo, hecho.registros
+        self.assertEqual((archivo.name, registros), ("Cuentas_2026-10-16_0010.csv", 258))
+        self.assertEqual(hecho.nota, "Saldos al 16/10/2026 00:10 (hora de Buenos Aires)")
         self.assertIn("/cuentas", self.traxion.pedidos)  # el de GESTORES, no el de PROVEEDORES
         self.assertNotIn("/proveedores/cuentas", self.traxion.pedidos)
         form = self.traxion.busquedas["cuentas"]
@@ -177,7 +182,8 @@ class TestContraTraxionFalso(unittest.TestCase):
 
     def test_depositos_por_filtros_con_la_fecha_del_reporte(self):
         self.sesion.iniciar()
-        archivo, registros = reportes.depositos(self.sesion.page, date(2026, 10, 14), Path(self.tmp.name))
+        hecho = reportes.depositos(self.sesion.page, date(2026, 10, 14), Path(self.tmp.name))
+        archivo, registros = hecho.archivo, hecho.registros
         self.assertEqual((archivo.name, registros), ("Depositos_2026-10-14.csv", 0))  # sin movimientos no es error
         form = self.traxion.busquedas["depositos"]
         self.assertEqual((form["desde_fecha"], form["hasta_fecha"]), ("14/10/2026", "14/10/2026"))
@@ -190,7 +196,8 @@ class TestContraTraxionFalso(unittest.TestCase):
 
     def test_ventas_guarda_el_archivo_tal_cual(self):
         self.sesion.iniciar()
-        archivo, registros = reportes.ventas(self.sesion.page, date(2026, 10, 15), Path(self.tmp.name))
+        hecho = reportes.ventas(self.sesion.page, date(2026, 10, 15), Path(self.tmp.name))
+        archivo, registros = hecho.archivo, hecho.registros
         self.assertEqual((archivo.name, registros), ("Ventas_2026-10-15.csv", 3))
         self.assertEqual(self.traxion.busquedas["ventas"]["desde_fecha"], "15/10/2026")
         self.assertEqual(archivo.read_bytes(), fake_traxion.EXPORTES["ventas"][1].encode("iso-8859-1"))
@@ -208,6 +215,15 @@ class TestContraTraxionFalso(unittest.TestCase):
                          [("Depósitos", None, 0), ("Cuentas", None, 258), ("Ventas", None, 3)])
         self.assertEqual(self.traxion.pedidos.count("/login"), 1)  # sin errores no hay relogin
         self.assert_nada_peligroso()
+
+    def test_dialogos_js_se_cancelan_salvo_al_cerrar_sesion(self):
+        self.sesion.iniciar()
+        page = self.sesion.page
+        self.assertFalse(page.evaluate("() => confirm('Anular marcados?')"))
+        self.assertIn("AVISO: dialogo JS inesperado: 'Anular marcados?' -> cancelar", self.leer_log())
+        self.sesion._cerrando = True  # lo que hace terminar() mientras cierra sesion
+        self.assertTrue(page.evaluate("() => confirm('Desea cerrar la plataforma?')"))
+        self.sesion._cerrando = False
 
     def test_el_log_no_guarda_la_sesion(self):
         self.sesion.iniciar()
