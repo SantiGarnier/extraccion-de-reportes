@@ -9,10 +9,12 @@ Uso:
     python main.py --probar-mail        manda un mail de prueba con un adjunto chico (no entra a Traxion)
 
 Sale con 0 si todo salio bien, y con 1 si fallo algun reporte, el login o el mail.
+Si el bot se cae por un error inesperado (por ejemplo, Chromium no arranca), igual manda el mail con el motivo.
 """
 import argparse
 import sys
 import tempfile
+import traceback
 from datetime import date
 from pathlib import Path
 
@@ -53,8 +55,12 @@ def correr(fecha: date, solo_login: bool) -> list[Resultado]:
             return reportes.ejecutar(sesion, fecha, reportes.carpeta_del_dia(fecha))
         finally:
             sesion.terminar()  # cierra la sesion en Traxion: no queda viva al terminar
-            context.close()
-            browser.close()
+            # un error al cerrar el navegador no puede tapar los reportes que ya salieron
+            for cerrar in (context.close, browser.close):
+                try:
+                    cerrar()
+                except Exception as e:  # noqa: BLE001
+                    log(f"AVISO: no se pudo cerrar el navegador ({reportes.motivo_de(e)})")
 
 
 def probar_mail(fecha: date) -> bool:
@@ -98,8 +104,15 @@ def main() -> int:
 
     modo = "solo login" if args.solo_login else f"reportes del {fecha:%d/%m/%Y}"
     log(f"=== Inicio ({modo}, headless={config.HEADLESS}) ===")
-    reportes.limpiar_reportes()
-    resultados = correr(fecha, args.solo_login)
+    try:
+        reportes.limpiar_reportes()
+        resultados = correr(fecha, args.solo_login)
+    except Exception as e:  # noqa: BLE001 - aunque el bot se caiga (ej. Chromium no arranca), el mail sale
+        log(f"ERROR inesperado: {reportes.motivo_de(e)}")
+        log(traceback.format_exc())
+        motivo = f"el bot fallo antes de terminar ({reportes.motivo_de(e)})"
+        nombres = ["Login"] if args.solo_login else [nombre for nombre, _ in reportes.REPORTES]
+        resultados = [Resultado(nombre, error=motivo) for nombre in nombres]
     todo_ok = all(r.error is None for r in resultados)
 
     if not args.solo_login and not args.sin_mail:

@@ -53,7 +53,11 @@ Sale con código **0** si todo salió bien y **1** si falló algún reporte, el 
 4. Logout, siempre.
 5. Se manda **un mail** con los reportes que salieron como adjuntos y, para los que fallaron, el motivo.
    Si falló alguno, el asunto termina en "- CON ERRORES". Si no se pudo entrar a Traxion, el mail
-   igual sale, con el motivo.
+   igual sale, con el motivo. Lo mismo si el bot se cae por algo inesperado (por ejemplo, Chromium no
+   arranca en el servidor): cada reporte figura con "el bot fallo antes de terminar (...)" y el detalle
+   completo queda en el log.
+   Lo único que no puede avisar por mail es un `.env` tan roto que no se pueda leer, o el SMTP caído:
+   eso queda en `logs/cron.log`.
 
 ### Fecha del reporte (corrida pasada la medianoche)
 
